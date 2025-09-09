@@ -9,10 +9,10 @@ import string
 # --- Hard-require spaCy (fail fast if unavailable) ---
 import spacy  # noqa: F401
 try:
-    _NLP = spacy.load("en_core_web_sm")
+    _NLP = spacy.load("en_core_web_trf")
 except Exception as e:
     raise RuntimeError(
-        "spaCy model 'en_core_web_sm' is required for MergeGuard. "
+        "spaCy model 'en_core_web_trf' is required for MergeGuard. "
         "Install with: pip install spacy==3.8.7 && python -m spacy download en_core_web_sm"
     ) from e
 
@@ -40,7 +40,8 @@ class MergeGuardConfig:
     # Similarity thresholds
     min_sim_merge: float = 0.78
     min_sim_factoid_merge: float = 0.80
-    min_sim_first_person: float = 0.55
+    min_sim_first_person: float = 0.55 
+    min_sim_first_person_tight: float = 0.40 # both first person, same day
     min_sim_relaxed_with_entity: float = 0.62  # used when we have entity evidence
 
     # Entity checks
@@ -147,18 +148,24 @@ class MergeGuard:
         signals["primary_a"], signals["primary_b"] = pa, pb
 
         # 2.1) First-person + temporal lane (single place, before normal sim gate)
-        if self._first_person_exception(text_a, text_b):
+        first_person_both = self._is_first_person(text_a) and self._is_first_person(text_b)
+        if first_person_both:
             if self.cfg.require_temporal_alignment_for_fusion and not temporal_tight:
                 signals["first_person_lane"] = "blocked_no_temporal_alignment"
             else:
-                if sim >= self.cfg.min_sim_first_person:
+                # pick threshold: tighter if same day/within-hours
+                fp_min = (self.cfg.min_sim_first_person_tight
+                        if temporal_tight else
+                        self.cfg.min_sim_first_person)
+                signals["first_person_lane_threshold"] = fp_min
+                if sim is None or sim >= fp_min:
                     signals["first_person_lane"] = "allowed"
                     signals["proposed_mode"] = "fusion"
+                    # Bypass entity-overlap gate for this lane
                     return self._allow("fusion", "first_person_fusion_exception", signals)
                 else:
-                    signals["first_person_lane"] = (
-                        f"sim_below_first_person_min({sim:.3f} < {self.cfg.min_sim_first_person})"
-                    )
+                    signals["first_person_lane"] = f"sim_below_first_person_min({sim:.3f} < {fp_min})"
+
 
         # 3) Normal similarity gate (with relaxation on entity evidence)
         is_factoid = self._is_factoid(text_a) and self._is_factoid(text_b)
@@ -250,7 +257,7 @@ class MergeGuard:
         if len(ents) >= 1:
             return ents
 
-        # --- 2) PROPN fallback: build contiguous proper-noun spans ---
+        # --- 3) PROPN fallback: build contiguous proper-noun spans ---
         # Example: "Chapter 1 (Loomings): Ishmael, uneasy ashore..."
         # -> "loomings", "ishmael"
         spans: list[str] = []
@@ -272,7 +279,16 @@ class MergeGuard:
 
         return set(spans)
 
+    def _subjects(self, t: str) -> list[str]:
+        doc = self.nlp(t)
+        return [tok.text.lower() for tok in doc if tok.dep_ in ("nsubj", "nsubjpass")]
 
+    def _has_first_person_subject(self, t: str) -> bool:
+        doc = self.nlp(t)
+        return any(
+            tok.dep_ in ("nsubj",) and tok.pos_ == "PRON" and tok.lemma_.lower() in {"i", "we"}
+            for tok in doc
+        )
 
     def _is_first_person(self, t: str) -> bool:
         return bool(_FIRST_PERSON_RE.search(t))
