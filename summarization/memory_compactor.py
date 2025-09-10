@@ -151,12 +151,12 @@ class CostGuard:
 
 
 # -------------------------
-# LLM Stub (replace with Astraea call)
+# LLM Stub (replace with your llm call)
 # -------------------------
 
 def summarize_with_llm(texts: List[str], target_tokens: int, mode: Optional[str] = None) -> str:
-    """Replace with your local Astraea inference call.
-    For safety, we keep a super simple deterministic merger when LLM is not available."""
+    """Replace with your local inference call.
+    We keep a super simple deterministic merger when LLM is not available."""
     if not texts:
         return ""
 
